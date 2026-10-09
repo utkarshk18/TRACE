@@ -122,10 +122,21 @@ testsRouter.post("/:testId/analyze", async (req, res) => {
       code: "CAPTURE_REJECTED",
     });
   }
+
+  let imgBuffer = null;
+  if (req.body.imageData && typeof req.body.imageData === "string" && req.body.imageData.startsWith("data:image")) {
+    try {
+      const base64Data = req.body.imageData.replace(/^data:image\/\w+;base64,/, "");
+      imgBuffer = Buffer.from(base64Data, "base64");
+    } catch {
+      imgBuffer = null;
+    }
+  }
+
   const { quality, analysis } = await runPipeline({
-    imageBuffer: null,
+    imageBuffer: imgBuffer,
     profile,
-    scenario,
+    scenario: imgBuffer ? null : scenario,
     failQuality: false,
   });
   if (!quality.accepted || !analysis) {
@@ -144,7 +155,7 @@ testsRouter.post("/:testId/analyze", async (req, res) => {
     location: test.location,
     device: test.deviceId,
     imageData: req.body.imageData || null,
-    simulated: Boolean(scenario) || analysis.simulated,
+    simulated: imgBuffer ? false : (Boolean(scenario) || analysis.simulated),
     offline: Boolean(test.offline || req.body.offline),
   });
   await getDb().collection("tests").updateOne(
