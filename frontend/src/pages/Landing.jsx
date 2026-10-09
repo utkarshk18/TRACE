@@ -14,7 +14,7 @@ export default function Landing() {
     <div className="landing">
       <div className="landing-brand-wrap">
         <h1 className="landing-logo">TRACE</h1>
-        <div className="kicker">FORENSIC COLORIMETRIC EVIDENCE PLATFORM</div>
+        <div className="kicker">Tamper-Resistant Automated Colorimetric Evaluation</div>
       </div>
       <h2 className="landing-headline">Turn field test reactions into verifiable digital evidence.</h2>
       <p className="lede">
