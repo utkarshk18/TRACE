@@ -257,8 +257,19 @@ export function classify(lab, profile, quality, simulated) {
   };
 }
 
+function colorIntToRGBA(c) {
+  return {
+    r: Math.floor(c / 256 / 256 / 256) % 256,
+    g: Math.floor(c / 256 / 256) % 256,
+    b: Math.floor(c / 256) % 256,
+    a: c % 256,
+  };
+}
+
 export async function extractRegionLab(buffer) {
-  const { Jimp } = await import("jimp");
+  const jimpModule = await import("jimp");
+  const Jimp = jimpModule.Jimp || jimpModule.default || jimpModule;
+  const toRGBA = jimpModule.intToRGBA || Jimp.intToRGBA || colorIntToRGBA;
   const img = await Jimp.read(buffer);
   const w = img.width;
   const h = img.height;
@@ -273,7 +284,7 @@ export async function extractRegionLab(buffer) {
   for (let y = y0; y < y1; y += 4) {
     for (let x = x0; x < x1; x += 4) {
       const c = img.getPixelColor(x, y);
-      const rgba = Jimp.intToRGBA(c);
+      const rgba = toRGBA(c);
       r += rgba.r;
       g += rgba.g;
       b += rgba.b;
@@ -284,7 +295,9 @@ export async function extractRegionLab(buffer) {
 }
 
 export async function assessUploadedQuality(buffer) {
-  const { Jimp } = await import("jimp");
+  const jimpModule = await import("jimp");
+  const Jimp = jimpModule.Jimp || jimpModule.default || jimpModule;
+  const toRGBA = jimpModule.intToRGBA || Jimp.intToRGBA || colorIntToRGBA;
   const img = await Jimp.read(buffer);
   const w = img.width;
   const h = img.height;
@@ -294,9 +307,9 @@ export async function assessUploadedQuality(buffer) {
   let n = 0;
   for (let y = 1; y < h - 1; y += 8) {
     for (let x = 1; x < w - 1; x += 8) {
-      const { r, g, b } = Jimp.intToRGBA(img.getPixelColor(x, y));
+      const { r, g, b } = toRGBA(img.getPixelColor(x, y));
       const lum = 0.2126 * r + 0.7152 * g + 0.0722 * b;
-      const { r: r2 } = Jimp.intToRGBA(img.getPixelColor(x + 1, y));
+      const { r: r2 } = toRGBA(img.getPixelColor(x + 1, y));
       brightness += lum;
       edge += Math.abs(r - r2);
       n += 1;
