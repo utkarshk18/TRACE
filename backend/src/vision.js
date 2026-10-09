@@ -44,8 +44,94 @@ export function rgbToLab(r, g, b) {
   return xyzToLab(rgbToXyz(r, g, b));
 }
 
-export function deltaE(lab1, lab2) {
+export function deltaE76(lab1, lab2) {
   return Math.hypot(lab1.L - lab2.L, lab1.a - lab2.a, lab1.b - lab2.b);
+}
+
+export function deltaE(lab1, lab2) {
+  return ciede2000(lab1, lab2);
+}
+
+export function ciede2000(lab1, lab2) {
+  const deg2rad = (deg) => (deg * Math.PI) / 180;
+  const rad2deg = (rad) => (rad * 180) / Math.PI;
+
+  const kL = 1;
+  const kC = 1;
+  const kH = 1;
+
+  const L1 = lab1.L;
+  const a1 = lab1.a;
+  const b1 = lab1.b;
+
+  const L2 = lab2.L;
+  const a2 = lab2.a;
+  const b2 = lab2.b;
+
+  const avgL = (L1 + L2) / 2;
+  const c1 = Math.hypot(a1, b1);
+  const c2 = Math.hypot(a2, b2);
+  const avgC = (c1 + c2) / 2;
+
+  const G = 0.5 * (1 - Math.sqrt(Math.pow(avgC, 7) / (Math.pow(avgC, 7) + Math.pow(25, 7))));
+  const a1Prime = (1 + G) * a1;
+  const a2Prime = (1 + G) * a2;
+
+  const c1Prime = Math.hypot(a1Prime, b1);
+  const c2Prime = Math.hypot(a2Prime, b2);
+  const avgCPrime = (c1Prime + c2Prime) / 2;
+
+  let h1Prime = rad2deg(Math.atan2(b1, a1Prime));
+  if (h1Prime < 0) h1Prime += 360;
+
+  let h2Prime = rad2deg(Math.atan2(b2, a2Prime));
+  if (h2Prime < 0) h2Prime += 360;
+
+  let deltahPrime;
+  if (Math.abs(h1Prime - h2Prime) <= 180) {
+    deltahPrime = h2Prime - h1Prime;
+  } else if (h2Prime <= h1Prime) {
+    deltahPrime = h2Prime - h1Prime + 360;
+  } else {
+    deltahPrime = h2Prime - h1Prime - 360;
+  }
+
+  const deltaLPrime = L2 - L1;
+  const deltaCPrime = c2Prime - c1Prime;
+  const deltaHPrime = 2 * Math.sqrt(c1Prime * c2Prime) * Math.sin(deg2rad(deltahPrime / 2));
+
+  let avgHPrime;
+  if (Math.abs(h1Prime - h2Prime) <= 180) {
+    avgHPrime = (h1Prime + h2Prime) / 2;
+  } else if (h1Prime + h2Prime < 360) {
+    avgHPrime = (h1Prime + h2Prime + 360) / 2;
+  } else {
+    avgHPrime = (h1Prime + h2Prime - 360) / 2;
+  }
+
+  const T =
+    1 -
+    0.17 * Math.cos(deg2rad(avgHPrime - 30)) +
+    0.24 * Math.cos(deg2rad(2 * avgHPrime)) +
+    0.32 * Math.cos(deg2rad(3 * avgHPrime + 6)) -
+    0.2 * Math.cos(deg2rad(4 * avgHPrime - 63));
+
+  const deltaTheta = 30 * Math.exp(-Math.pow((avgHPrime - 275) / 25, 2));
+  const RC = 2 * Math.sqrt(Math.pow(avgCPrime, 7) / (Math.pow(avgCPrime, 7) + Math.pow(25, 7)));
+
+  const SL = 1 + (0.015 * Math.pow(avgL - 50, 2)) / Math.sqrt(20 + Math.pow(avgL - 50, 2));
+  const SC = 1 + 0.045 * avgCPrime;
+  const SH = 1 + 0.015 * avgCPrime * T;
+  const RT = -Math.sin(deg2rad(2 * deltaTheta)) * RC;
+
+  const dE = Math.sqrt(
+    Math.pow(deltaLPrime / (kL * SL), 2) +
+      Math.pow(deltaCPrime / (kC * SC), 2) +
+      Math.pow(deltaHPrime / (kH * SH), 2) +
+      RT * (deltaCPrime / (kC * SC)) * (deltaHPrime / (kH * SH))
+  );
+
+  return Number(dE.toFixed(2));
 }
 
 export function poorCaptureQuality() {
@@ -96,40 +182,50 @@ function mean(values) {
 export function classify(lab, profile, quality, simulated) {
   const pos = profile.positiveLab;
   const neg = profile.negativeLab;
-  const dPos = deltaE(lab, pos);
-  const dNeg = deltaE(lab, neg);
+  const dPos = ciede2000(lab, pos);
+  const dNeg = ciede2000(lab, neg);
   const threshold = Number(profile.uncertaintyThreshold ?? 0.72);
-  const simPos = Math.max(0, 1 - dPos / 80);
-  const simNeg = Math.max(0, 1 - dNeg / 80);
+
+  const tau = 24.0;
+  const simPos = Math.exp(-Math.pow(dPos, 2) / (2 * Math.pow(tau, 2)));
+  const simNeg = Math.exp(-Math.pow(dNeg, 2) / (2 * Math.pow(tau, 2)));
+  const totalSim = simPos + simNeg + 0.0001;
+  const probPos = simPos / totalSim;
+  const probNeg = simNeg / totalSim;
+
   const qualityScore = mean(Object.values(quality.scores));
   const calibrationScore = simulated ? 0.98 : Math.min(0.99, 0.82 + qualityScore * 0.16);
 
   let result;
-  let confidence;
+  let rawConfidence;
   let analysisBasis;
   let recommendedAction = null;
 
-  if (Math.abs(simPos - simNeg) < 0.08 || Math.max(simPos, simNeg) < 0.55) {
+  const deltaDifference = Math.abs(dPos - dNeg);
+
+  if (deltaDifference < 4.5 || Math.max(probPos, probNeg) < 0.6) {
     result = "INCONCLUSIVE";
-    confidence = Number((0.52 + Math.abs(simPos - simNeg) * 0.8).toFixed(3));
-    analysisBasis = "Observed colour response overlaps the uncertainty range.";
+    rawConfidence = 0.52 + Math.min(0.2, deltaDifference * 0.03);
+    analysisBasis = `Color difference margin between reference standards (ΔE+ ${dPos} vs ΔE- ${dNeg}) falls inside the uncertainty threshold.`;
     recommendedAction =
       "Repeat the field test or submit for confirmatory laboratory analysis.";
-  } else if (simPos > simNeg) {
+  } else if (dPos < dNeg) {
     result = "POSITIVE";
-    confidence = Number(Math.min(0.97, 0.78 + simPos * 0.18).toFixed(3));
+    rawConfidence = Math.min(0.98, 0.78 + probPos * 0.19);
     analysisBasis =
-      "Detected colour response falls within the calibrated positive reference range.";
+      `Detected colour response matches calibrated positive reference standard (CIEDE2000 ΔE ${dPos}).`;
   } else {
     result = "NEGATIVE";
-    confidence = Number(Math.min(0.97, 0.78 + simNeg * 0.18).toFixed(3));
+    rawConfidence = Math.min(0.98, 0.78 + probNeg * 0.19);
     analysisBasis =
-      "Detected colour response aligns with the calibrated negative reference range.";
+      `Detected colour response aligns with calibrated negative reference standard (CIEDE2000 ΔE ${dNeg}).`;
   }
+
+  const confidence = Number((rawConfidence * (0.8 + qualityScore * 0.2)).toFixed(3));
 
   if (confidence < threshold) {
     result = "INCONCLUSIVE";
-    analysisBasis = "Observed colour response overlaps the uncertainty range.";
+    analysisBasis = `Observed colour response confidence (${(confidence * 100).toFixed(1)}%) is below the uncertainty threshold (${(threshold * 100).toFixed(0)}%).`;
     recommendedAction =
       "Repeat the field test or submit for confirmatory laboratory analysis.";
   }
@@ -140,7 +236,7 @@ export function classify(lab, profile, quality, simulated) {
     qualityScore: Number(qualityScore.toFixed(3)),
     calibrationScore: Number(calibrationScore.toFixed(3)),
     decisionBasis: [
-      { label: "Colour similarity", value: Math.round(Math.max(simPos, simNeg) * 100) },
+      { label: "Colour similarity", value: Math.round(Math.max(probPos, probNeg) * 100) },
       { label: "Calibration quality", value: Math.round(calibrationScore * 100) },
       { label: "Image quality", value: Math.round(qualityScore * 100) },
       { label: "Model confidence", value: Math.round(confidence * 100) },
@@ -152,6 +248,10 @@ export function classify(lab, profile, quality, simulated) {
       L: Number(lab.L.toFixed(2)),
       a: Number(lab.a.toFixed(2)),
       b: Number(lab.b.toFixed(2)),
+    },
+    ciede2000: {
+      dEPos: dPos,
+      dENeg: dNeg,
     },
     simulated,
   };

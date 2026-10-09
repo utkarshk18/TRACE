@@ -165,6 +165,45 @@ testsRouter.post("/:testId/analyze", async (req, res) => {
   });
 });
 
+testsRouter.post("/:testId/evaluate-frame", async (req, res) => {
+  try {
+    const test = await getDb().collection("tests").findOne({ testId: req.params.testId });
+    if (!test) return res.status(404).json({ detail: "Test not found.", code: "NOT_FOUND" });
+    const profile = await getDb().collection("test_profiles").findOne({ slug: test.profileSlug });
+    if (!profile) return res.status(404).json({ detail: "Profile not found.", code: "NOT_FOUND" });
+
+    const { rgb, refWhite, quality: clientQuality } = req.body;
+    if (!rgb || typeof rgb.r !== "number" || typeof rgb.g !== "number" || typeof rgb.b !== "number") {
+      return res.status(400).json({ detail: "Valid RGB object is required (r, g, b).", code: "INVALID_RGB" });
+    }
+
+    // Apply chromatic adaptation using refWhite if provided
+    let { r, g, b } = rgb;
+    if (refWhite && refWhite.r > 30 && refWhite.g > 30 && refWhite.b > 30) {
+      const avg = (refWhite.r + refWhite.g + refWhite.b) / 3;
+      r = Math.min(255, Math.max(0, Math.round(r * (avg / refWhite.r))));
+      g = Math.min(255, Math.max(0, Math.round(g * (avg / refWhite.g))));
+      b = Math.min(255, Math.max(0, Math.round(b * (avg / refWhite.b))));
+    }
+
+    const lab = (await import("../vision.js")).rgbToLab(r, g, b);
+    const quality = clientQuality || (await import("../vision.js")).demoQuality();
+    const { classify } = await import("../vision.js");
+    const evaluation = classify(lab, profile, quality, false);
+
+    res.json({
+      testId: test.testId,
+      profileSlug: profile.slug,
+      lab,
+      calibratedRgb: { r, g, b },
+      evaluation,
+      timestamp: new Date().toISOString(),
+    });
+  } catch (err) {
+    res.status(500).json({ detail: err.message, code: "FRAME_EVAL_ERROR" });
+  }
+});
+
 testsRouter.get("/:testId", async (req, res) => {
   const test = await getDb().collection("tests").findOne({ testId: req.params.testId });
   if (!test) return res.status(404).json({ detail: "Test not found.", code: "NOT_FOUND" });
