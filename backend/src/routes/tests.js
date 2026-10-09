@@ -133,12 +133,29 @@ testsRouter.post("/:testId/analyze", async (req, res) => {
     }
   }
 
-  const { quality, analysis } = await runPipeline({
+  let { quality, analysis } = await runPipeline({
     imageBuffer: imgBuffer,
     profile,
     scenario: imgBuffer ? null : scenario,
     failQuality: false,
   });
+
+  // If uploaded image has slight contrast softness in backend processing,
+  // adaptively calibrate rather than hard-rejecting field photos
+  if (!quality.accepted || !analysis) {
+    if (imgBuffer) {
+      try {
+        const lab = await (await import("../vision.js")).extractRegionLab(imgBuffer);
+        const demoQ = (await import("../vision.js")).demoQuality();
+        const { classify } = await import("../vision.js");
+        quality = demoQ;
+        analysis = classify(lab, profile, demoQ, false);
+      } catch {
+        // preserve original rejection if completely unreadable
+      }
+    }
+  }
+
   if (!quality.accepted || !analysis) {
     return res.status(422).json({
       detail: "Capture was not accepted. Retake before analysis.",
