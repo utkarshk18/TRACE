@@ -492,19 +492,22 @@ export default function NewTest() {
       return;
     }
     try {
+      const payload = {
+        profileSlug,
+        locationLabel: "Harbor Checkpoint, Sector 4 (Field Inspection)",
+        offline: false,
+      };
+      if (scenario && scenario !== "camera" && scenario !== "custom-image") {
+        payload.demoScenario = scenario;
+      }
       const created = await api("/tests", {
         method: "POST",
-        body: JSON.stringify({
-          profileSlug,
-          demoScenario: scenario === "camera" || scenario === "custom-image" ? null : scenario,
-          locationLabel: "Harbor Checkpoint, Sector 4 (Field Inspection)",
-          offline: false,
-        }),
+        body: JSON.stringify(payload),
       });
       setTest(created.test);
       setPhase("capture");
     } catch (e) {
-      setError(e.message);
+      setError(e.message || "Failed to initialize test session");
     }
   }
 

@@ -18,7 +18,7 @@ const upload = multer({
 
 const newTestSchema = z.object({
   profileSlug: z.string().min(1),
-  demoScenario: z.enum(["positive", "negative", "inconclusive", "poor-capture"]).optional(),
+  demoScenario: z.string().nullable().optional(),
   notes: z.string().max(500).optional(),
   locationLabel: z.string().max(200).optional(),
   latitude: z.number().optional(),
