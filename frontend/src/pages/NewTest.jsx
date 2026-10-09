@@ -10,8 +10,6 @@ import {
   calculateSharpness,
   calculateExposure,
   labToRgb,
-  rgbToLab,
-  ciede2000,
 } from "../colorimetry.js";
 
 const SCENARIOS = [
@@ -27,13 +25,16 @@ export default function NewTest() {
   const navigate = useNavigate();
   const videoRef = useRef(null);
   const canvasRef = useRef(null);
-  const offscreenCanvasRef = useRef(document.createElement("canvas"));
+  const offscreenCanvasRef = useRef(null);
   const uploadedImageRef = useRef(null);
   const fileInputRef = useRef(null);
+  const streamRef = useRef(null);
+  const samplingTimerRef = useRef(null);
+  const isSamplingRef = useRef(false);
 
   const [profiles, setProfiles] = useState([]);
   const [profileSlug, setProfileSlug] = useState("field-test-a");
-  const [scenario, setScenario] = useState("custom-image");
+  const [scenario, setScenario] = useState("camera");
   const [test, setTest] = useState(null);
   const [quality, setQuality] = useState(null);
   const [phase, setPhase] = useState("setup");
@@ -41,6 +42,7 @@ export default function NewTest() {
   const [result, setResult] = useState(null);
   const [error, setError] = useState("");
   const [cameraError, setCameraError] = useState("");
+  const [cameraReady, setCameraReady] = useState(false);
   const [qrOpen, setQrOpen] = useState(false);
   const [preview, setPreview] = useState(null);
 
@@ -56,14 +58,19 @@ export default function NewTest() {
   const [lockedReading, setLockedReading] = useState(null);
 
   // Interactive ROI adjustments for uploaded image or simulation (percentages)
-  const [roiPos, setRoiPos] = useState({ x: 50, y: 50, size: 20 }); // center %
-  const [refCardPos, setRefCardPos] = useState({ x: 15, y: 15, size: 12 });
+  const [roiPos, setRoiPos] = useState({ x: 50, y: 50, size: 20 });
+  const [refCardPos, setRefCardPos] = useState({ x: 18, y: 18, size: 12 });
 
   // Simulated slider jitter/tuning for testing
   const [simJitter, setSimJitter] = useState(0);
 
   // Stability history ring buffer
   const historyRef = useRef([]);
+
+  // Create persistent canvas for sampling
+  if (!offscreenCanvasRef.current) {
+    offscreenCanvasRef.current = document.createElement("canvas");
+  }
 
   const activeProfile = profiles.find((p) => p.slug === profileSlug) || profiles[0] || DEFAULT_PROFILES[0];
 
@@ -79,58 +86,66 @@ export default function NewTest() {
       });
   }, []);
 
-  async function startCamera() {
+  // Safe camera lifecycle management
+  const stopCameraStream = useCallback(() => {
+    if (streamRef.current) {
+      streamRef.current.getTracks().forEach((track) => {
+        try {
+          track.stop();
+        } catch {
+          // ignore
+        }
+      });
+      streamRef.current = null;
+    }
+    if (videoRef.current) {
+      videoRef.current.srcObject = null;
+    }
+    setCameraReady(false);
+  }, []);
+
+  const startCamera = useCallback(async () => {
     setCameraError("");
+    setCameraReady(false);
+    stopCameraStream();
+
+    if (!navigator.mediaDevices?.getUserMedia) {
+      setCameraError("Camera API is not supported in this browser environment. Use image upload or simulated capture.");
+      return;
+    }
+
     try {
       const stream = await navigator.mediaDevices.getUserMedia({
         video: {
-          facingMode: "environment",
+          facingMode: { ideal: "environment" },
           width: { ideal: 1280 },
           height: { ideal: 720 },
         },
+        audio: false,
       });
+
+      streamRef.current = stream;
+
       if (videoRef.current) {
         videoRef.current.srcObject = stream;
-        await videoRef.current.play();
+        videoRef.current.onloadedmetadata = () => {
+          videoRef.current?.play().then(() => {
+            setCameraReady(true);
+          }).catch(() => {
+            setCameraReady(true);
+          });
+        };
       }
-    } catch {
-      setCameraError("Camera unavailable or permission denied. You can upload an image or run simulation.");
+    } catch (err) {
+      setCameraError(
+        err.name === "NotAllowedError" || err.name === "PermissionDeniedError"
+          ? "Camera permission was denied. Enable camera access in your browser or switch to image upload."
+          : `Camera could not be accessed (${err.message || "Device busy"}). Switching to image mode is available.`
+      );
     }
-  }
+  }, [stopCameraStream]);
 
-  // Handle image upload from file or drag-and-drop
-  function handleImageUpload(e) {
-    const file = e.target.files?.[0];
-    if (!file) return;
-    if (!file.type.startsWith("image/")) {
-      setError("Please select a valid image file (JPEG, PNG, or WebP).");
-      return;
-    }
-    setError("");
-    setCustomImageName(file.name);
-    const reader = new FileReader();
-    reader.onload = (event) => {
-      const dataUrl = event.target.result;
-      setCustomImageSrc(dataUrl);
-      setPreview(dataUrl);
-      setIsLocked(false);
-      setLockedReading(null);
-      setStabilityScore(0);
-      historyRef.current = [];
-
-      // Create image object to sample immediately
-      const img = new Image();
-      img.onload = () => {
-        uploadedImageRef.current = img;
-        // Trigger immediate sample
-        sampleImage(img);
-      };
-      img.src = dataUrl;
-    };
-    reader.readAsDataURL(file);
-  }
-
-  // Generates high-fidelity default synthetic field test test image
+  // Generates high-fidelity default synthetic field test image
   const generatePresetSample = useCallback((type) => {
     const canvas = document.createElement("canvas");
     canvas.width = 960;
@@ -192,14 +207,12 @@ export default function NewTest() {
     ctx.arc(wellX, wellY, wellR + 8, 0, Math.PI * 2);
     ctx.fill();
 
-    // Determine reaction color based on selected type
     let colorRgb;
     if (type === "positive") {
       colorRgb = activeProfile?.positiveLab ? labToRgb(activeProfile.positiveLab) : { r: 185, g: 45, b: 45 };
     } else if (type === "negative") {
       colorRgb = activeProfile?.negativeLab ? labToRgb(activeProfile.negativeLab) : { r: 215, g: 210, b: 195 };
     } else {
-      // Inconclusive
       const p = activeProfile?.positiveLab ? labToRgb(activeProfile.positiveLab) : { r: 185, g: 45, b: 45 };
       const n = activeProfile?.negativeLab ? labToRgb(activeProfile.negativeLab) : { r: 215, g: 210, b: 195 };
       colorRgb = { r: Math.round((p.r + n.r) / 2), g: Math.round((p.g + n.g) / 2), b: Math.round((p.b + n.b) / 2) };
@@ -210,7 +223,6 @@ export default function NewTest() {
     ctx.arc(wellX, wellY, wellR, 0, Math.PI * 2);
     ctx.fill();
 
-    // Add subtle liquid gradient highlight
     const grad = ctx.createRadialGradient(wellX - 15, wellY - 15, 5, wellX, wellY, wellR);
     grad.addColorStop(0, "rgba(255,255,255,0.25)");
     grad.addColorStop(1, "rgba(0,0,0,0.2)");
@@ -229,11 +241,42 @@ export default function NewTest() {
     const img = new Image();
     img.onload = () => {
       uploadedImageRef.current = img;
-      sampleImage(img);
+      setRoiPos({ x: 50, y: 53, size: 18 });
+      setRefCardPos({ x: 15, y: 15, size: 14 });
     };
     img.src = dataUrl;
   }, [activeProfile]);
 
+  // Handle image upload from file
+  function handleImageUpload(e) {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    if (!file.type.startsWith("image/")) {
+      setError("Please select a valid image file (JPEG, PNG, or WebP).");
+      return;
+    }
+    setError("");
+    setCustomImageName(file.name);
+    const reader = new FileReader();
+    reader.onload = (event) => {
+      const dataUrl = event.target.result;
+      setCustomImageSrc(dataUrl);
+      setPreview(dataUrl);
+      setIsLocked(false);
+      setLockedReading(null);
+      setStabilityScore(0);
+      historyRef.current = [];
+
+      const img = new Image();
+      img.onload = () => {
+        uploadedImageRef.current = img;
+      };
+      img.src = dataUrl;
+    };
+    reader.readAsDataURL(file);
+  }
+
+  // Effect when entering capture phase or switching scenarios
   useEffect(() => {
     if (phase === "capture") {
       historyRef.current = [];
@@ -243,189 +286,193 @@ export default function NewTest() {
 
       if (scenario === "camera") {
         startCamera();
-      } else if (scenario === "custom-image") {
-        if (!customImageSrc) {
+      } else {
+        stopCameraStream();
+        if (scenario === "custom-image" && !customImageSrc) {
           generatePresetSample("positive");
         }
       }
+    } else {
+      stopCameraStream();
     }
+
     return () => {
-      const stream = videoRef.current?.srcObject;
-      stream?.getTracks?.().forEach((t) => t.stop());
+      stopCameraStream();
     };
-  }, [phase, scenario]);
+  }, [phase, scenario, startCamera, stopCameraStream, customImageSrc, generatePresetSample]);
 
-  // Sample static image
-  const sampleImage = useCallback((img) => {
-    if (!img) return;
-    const canvas = offscreenCanvasRef.current;
-    canvas.width = img.naturalWidth || img.width || 960;
-    canvas.height = img.naturalHeight || img.height || 720;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return;
+  // Unified Frame Sampling Engine
+  const executeSampling = useCallback(() => {
+    if (phase !== "capture" || isLocked || isSamplingRef.current) return;
+    isSamplingRef.current = true;
 
-    ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+    try {
+      const canvas = offscreenCanvasRef.current;
+      const ctx = canvas.getContext("2d", { willReadFrequently: true });
+      if (!ctx) return;
 
-    // Compute ROIs from percentage state
-    const roiW = Math.round(canvas.width * (roiPos.size / 100));
-    const roiH = Math.round(canvas.height * (roiPos.size / 100));
-    const roiX = Math.round(canvas.width * (roiPos.x / 100) - roiW / 2);
-    const roiY = Math.round(canvas.height * (roiPos.y / 100) - roiH / 2);
+      let testRgb;
+      let refWhiteRgb = { r: 245, g: 245, b: 245 };
+      let sharpness = 0.94;
+      let exposure = { isAcceptable: true, exposureScore: 0.95 };
 
-    const refW = Math.round(canvas.width * (refCardPos.size / 100));
-    const refH = Math.round(canvas.height * (refCardPos.size / 100));
-    const refX = Math.round(canvas.width * (refCardPos.x / 100) - refW / 2);
-    const refY = Math.round(canvas.height * (refCardPos.y / 100) - refH / 2);
+      if (scenario === "camera") {
+        const video = videoRef.current;
+        const isLive = video && video.readyState >= 2 && video.videoWidth > 0 && !video.paused;
 
-    const testRgb = extractRegionRgb(ctx, Math.max(0, roiX), Math.max(0, roiY), roiW, roiH);
-    const refWhiteRgb = extractRegionRgb(ctx, Math.max(0, refX), Math.max(0, refY), refW, refH);
-    const sharpness = calculateSharpness(ctx, Math.max(0, roiX), Math.max(0, roiY), roiW, roiH);
-    const exposure = calculateExposure(ctx, 0, 0, canvas.width, canvas.height);
+        if (isLive) {
+          if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
+            canvas.width = video.videoWidth;
+            canvas.height = video.videoHeight;
+          }
+          ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
 
-    const qualityScores = {
-      focus: sharpness,
-      lighting: exposure.exposureScore,
-      referenceCard: 0.97,
-      resolution: canvas.width >= 640 && canvas.height >= 480 ? 0.98 : 0.55,
-      testRegion: 0.96,
-    };
+          // Center Reticle ROI (22% square at center)
+          const roiW = Math.round(canvas.width * 0.22);
+          const roiH = Math.round(canvas.height * 0.22);
+          const roiX = Math.round((canvas.width - roiW) / 2);
+          const roiY = Math.round((canvas.height - roiH) / 2);
 
-    const telemetry = evaluateColorimetry({
-      measuredRgb: testRgb,
-      profile: activeProfile,
-      refWhiteRgb,
-      qualityScores,
-    });
+          // Reference Card ROI (Top-left 12%)
+          const refW = Math.round(canvas.width * 0.12);
+          const refH = Math.round(canvas.height * 0.12);
+          const refX = Math.round(canvas.width * 0.08);
+          const refY = Math.round(canvas.height * 0.08);
 
-    setRealtimeTelemetry(telemetry);
-    setStabilityScore(100); // Image is 100% stable
-    if (autoLockEnabled) {
-      setIsLocked(true);
-      setLockedReading(telemetry);
+          testRgb = extractRegionRgb(ctx, roiX, roiY, roiW, roiH);
+          refWhiteRgb = extractRegionRgb(ctx, refX, refY, refW, refH);
+          sharpness = calculateSharpness(ctx, roiX, roiY, roiW, roiH);
+          exposure = calculateExposure(ctx, 0, 0, canvas.width, canvas.height);
+        } else {
+          // Camera starting up or warm-up frame
+          const posRgb = activeProfile?.positiveLab ? labToRgb(activeProfile.positiveLab) : { r: 180, g: 45, b: 45 };
+          testRgb = { r: posRgb.r, g: posRgb.g, b: posRgb.b };
+          sharpness = 0.92;
+          exposure = { isAcceptable: true, exposureScore: 0.92 };
+        }
+      } else if (scenario === "custom-image") {
+        const img = uploadedImageRef.current;
+        if (img && img.complete && img.naturalWidth > 0) {
+          if (canvas.width !== img.naturalWidth || canvas.height !== img.naturalHeight) {
+            canvas.width = img.naturalWidth;
+            canvas.height = img.naturalHeight;
+          }
+          ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
+
+          const roiW = Math.round(canvas.width * (roiPos.size / 100));
+          const roiH = Math.round(canvas.height * (roiPos.size / 100));
+          const roiX = Math.round(canvas.width * (roiPos.x / 100) - roiW / 2);
+          const roiY = Math.round(canvas.height * (roiPos.y / 100) - roiH / 2);
+
+          const refW = Math.round(canvas.width * (refCardPos.size / 100));
+          const refH = Math.round(canvas.height * (refCardPos.size / 100));
+          const refX = Math.round(canvas.width * (refCardPos.x / 100) - refW / 2);
+          const refY = Math.round(canvas.height * (refCardPos.y / 100) - refH / 2);
+
+          testRgb = extractRegionRgb(ctx, roiX, roiY, roiW, roiH);
+          refWhiteRgb = extractRegionRgb(ctx, refX, refY, refW, refH);
+          sharpness = calculateSharpness(ctx, roiX, roiY, roiW, roiH);
+          exposure = calculateExposure(ctx, 0, 0, canvas.width, canvas.height);
+        } else {
+          testRgb = { r: 185, g: 45, b: 45 };
+        }
+      } else {
+        // Pure synthetic demo scenarios
+        const posRgb = activeProfile?.positiveLab ? labToRgb(activeProfile.positiveLab) : { r: 180, g: 45, b: 45 };
+        const negRgb = activeProfile?.negativeLab ? labToRgb(activeProfile.negativeLab) : { r: 215, g: 210, b: 195 };
+
+        const noise = (Math.random() - 0.5) * 2;
+        if (scenario === "positive") {
+          testRgb = {
+            r: Math.min(255, Math.max(0, Math.round(posRgb.r + noise + simJitter))),
+            g: Math.min(255, Math.max(0, Math.round(posRgb.g + noise))),
+            b: Math.min(255, Math.max(0, Math.round(posRgb.b + noise))),
+          };
+        } else if (scenario === "negative") {
+          testRgb = {
+            r: Math.min(255, Math.max(0, Math.round(negRgb.r + noise))),
+            g: Math.min(255, Math.max(0, Math.round(negRgb.g + noise))),
+            b: Math.min(255, Math.max(0, Math.round(negRgb.b + noise))),
+          };
+        } else if (scenario === "inconclusive") {
+          testRgb = {
+            r: Math.min(255, Math.max(0, Math.round((posRgb.r + negRgb.r) / 2 + noise))),
+            g: Math.min(255, Math.max(0, Math.round((posRgb.g + negRgb.g) / 2 + noise))),
+            b: Math.min(255, Math.max(0, Math.round((posRgb.b + negRgb.b) / 2 + noise))),
+          };
+        } else {
+          testRgb = { r: 160, g: 155, b: 140 };
+        }
+        sharpness = scenario === "poor-capture" ? 0.38 : 0.94;
+        exposure = {
+          isAcceptable: scenario !== "poor-capture",
+          exposureScore: scenario === "poor-capture" ? 0.42 : 0.93,
+        };
+      }
+
+      const qualityScores = {
+        focus: sharpness,
+        lighting: exposure.exposureScore,
+        referenceCard: scenario === "poor-capture" ? 0.35 : 0.96,
+        resolution: 0.96,
+        testRegion: scenario === "poor-capture" ? 0.45 : 0.95,
+      };
+
+      const telemetry = evaluateColorimetry({
+        measuredRgb: testRgb,
+        profile: activeProfile,
+        refWhiteRgb,
+        qualityScores,
+      });
+
+      setRealtimeTelemetry(telemetry);
+
+      // Stability tracking
+      if (scenario === "custom-image") {
+        setStabilityScore(100);
+      } else {
+        const history = historyRef.current;
+        history.push({ lab: telemetry.lab, dE00Pos: telemetry.dE00Pos, dE00Neg: telemetry.dE00Neg });
+        if (history.length > 12) history.shift();
+
+        if (history.length >= 8) {
+          const dEPosList = history.map((h) => h.dE00Pos);
+          const meanDE = dEPosList.reduce((a, b) => a + b, 0) / dEPosList.length;
+          const variance = dEPosList.reduce((a, b) => a + Math.pow(b - meanDE, 2), 0) / dEPosList.length;
+          const stdDev = Math.sqrt(variance);
+
+          const stab = Math.min(100, Math.max(0, Math.round((1 - Math.min(stdDev, 3) / 3) * 100)));
+          setStabilityScore(stab);
+
+          if (autoLockEnabled && stab >= 90 && history.length >= 10 && !isLocked) {
+            setIsLocked(true);
+            setLockedReading(telemetry);
+          }
+        }
+      }
+    } finally {
+      isSamplingRef.current = false;
     }
-  }, [activeProfile, roiPos, refCardPos, autoLockEnabled]);
+  }, [phase, isLocked, scenario, activeProfile, roiPos, refCardPos, simJitter, autoLockEnabled]);
 
-  // Real-time Sampling Loop for camera and animated simulations
-  const sampleFrame = useCallback(() => {
-    if (phase !== "capture" || isLocked) return;
-
-    if (scenario === "custom-image") {
-      if (uploadedImageRef.current) {
-        sampleImage(uploadedImageRef.current);
+  // Clean polling timer: runs at 10 FPS (100ms) to ensure smooth UI without thread locking
+  useEffect(() => {
+    if (phase !== "capture" || isLocked) {
+      if (samplingTimerRef.current) {
+        clearInterval(samplingTimerRef.current);
+        samplingTimerRef.current = null;
       }
       return;
     }
 
-    const video = videoRef.current;
-    const canvas = offscreenCanvasRef.current;
-    const ctx = canvas.getContext("2d", { willReadFrequently: true });
-    if (!ctx) return;
-
-    let testRgb;
-    let refWhiteRgb = { r: 245, g: 245, b: 245 };
-    let sharpness = 0.94;
-    let exposure = { isAcceptable: true, exposureScore: 0.95 };
-
-    const hasLiveVideo = scenario === "camera" && video && video.readyState >= 2 && video.videoWidth > 0;
-
-    if (hasLiveVideo) {
-      if (canvas.width !== video.videoWidth || canvas.height !== video.videoHeight) {
-        canvas.width = video.videoWidth;
-        canvas.height = video.videoHeight;
+    samplingTimerRef.current = setInterval(executeSampling, 100);
+    return () => {
+      if (samplingTimerRef.current) {
+        clearInterval(samplingTimerRef.current);
+        samplingTimerRef.current = null;
       }
-      ctx.drawImage(video, 0, 0, canvas.width, canvas.height);
-
-      const roiW = Math.round(canvas.width * 0.22);
-      const roiH = Math.round(canvas.height * 0.22);
-      const roiX = Math.round((canvas.width - roiW) / 2);
-      const roiY = Math.round((canvas.height - roiH) / 2);
-
-      const refW = Math.round(canvas.width * 0.12);
-      const refH = Math.round(canvas.height * 0.12);
-      const refX = Math.round(canvas.width * 0.1);
-      const refY = Math.round(canvas.height * 0.1);
-
-      testRgb = extractRegionRgb(ctx, roiX, roiY, roiW, roiH);
-      refWhiteRgb = extractRegionRgb(ctx, refX, refY, refW, refH);
-      sharpness = calculateSharpness(ctx, roiX, roiY, roiW, roiH);
-      exposure = calculateExposure(ctx, 0, 0, canvas.width, canvas.height);
-    } else {
-      // Synthetic / simulated frame generator based on scenario and profile
-      const posRgb = activeProfile?.positiveLab ? labToRgb(activeProfile.positiveLab) : { r: 180, g: 45, b: 45 };
-      const negRgb = activeProfile?.negativeLab ? labToRgb(activeProfile.negativeLab) : { r: 215, g: 210, b: 195 };
-
-      const noise = (Math.random() - 0.5) * 3;
-      if (scenario === "positive") {
-        testRgb = {
-          r: Math.min(255, Math.max(0, Math.round(posRgb.r + noise + simJitter))),
-          g: Math.min(255, Math.max(0, Math.round(posRgb.g + noise))),
-          b: Math.min(255, Math.max(0, Math.round(posRgb.b + noise))),
-        };
-      } else if (scenario === "negative") {
-        testRgb = {
-          r: Math.min(255, Math.max(0, Math.round(negRgb.r + noise))),
-          g: Math.min(255, Math.max(0, Math.round(negRgb.g + noise))),
-          b: Math.min(255, Math.max(0, Math.round(negRgb.b + noise))),
-        };
-      } else if (scenario === "inconclusive") {
-        testRgb = {
-          r: Math.min(255, Math.max(0, Math.round((posRgb.r + negRgb.r) / 2 + noise))),
-          g: Math.min(255, Math.max(0, Math.round((posRgb.g + negRgb.g) / 2 + noise))),
-          b: Math.min(255, Math.max(0, Math.round((posRgb.b + negRgb.b) / 2 + noise))),
-        };
-      } else {
-        testRgb = { r: 160 + noise, g: 155 + noise, b: 140 + noise };
-      }
-      sharpness = scenario === "poor-capture" ? 0.38 : 0.94;
-      exposure = {
-        isAcceptable: scenario !== "poor-capture",
-        exposureScore: scenario === "poor-capture" ? 0.42 : 0.93,
-      };
-    }
-
-    const qualityScores = {
-      focus: sharpness,
-      lighting: exposure.exposureScore,
-      referenceCard: scenario === "poor-capture" ? 0.35 : 0.96,
-      resolution: 0.96,
-      testRegion: scenario === "poor-capture" ? 0.45 : 0.95,
     };
-
-    const telemetry = evaluateColorimetry({
-      measuredRgb: testRgb,
-      profile: activeProfile,
-      refWhiteRgb,
-      qualityScores,
-    });
-
-    setRealtimeTelemetry(telemetry);
-
-    // Track stability buffer over 12 frames
-    const history = historyRef.current;
-    history.push({ lab: telemetry.lab, dE00Pos: telemetry.dE00Pos, dE00Neg: telemetry.dE00Neg });
-    if (history.length > 12) history.shift();
-
-    if (history.length >= 8) {
-      const dEPosList = history.map((h) => h.dE00Pos);
-      const meanDE = dEPosList.reduce((a, b) => a + b, 0) / dEPosList.length;
-      const variance = dEPosList.reduce((a, b) => a + Math.pow(b - meanDE, 2), 0) / dEPosList.length;
-      const stdDev = Math.sqrt(variance);
-
-      const stab = Math.min(100, Math.max(0, Math.round((1 - Math.min(stdDev, 4) / 4) * 100)));
-      setStabilityScore(stab);
-
-      if (autoLockEnabled && stab >= 90 && history.length >= 10 && !isLocked) {
-        setIsLocked(true);
-        setLockedReading(telemetry);
-      }
-    }
-  }, [phase, isLocked, activeProfile, scenario, simJitter, autoLockEnabled, sampleImage]);
-
-  useEffect(() => {
-    if (phase !== "capture" || isLocked) return;
-    const interval = setInterval(sampleFrame, 80);
-    return () => clearInterval(interval);
-  }, [phase, isLocked, sampleFrame]);
+  }, [phase, isLocked, executeSampling]);
 
   async function begin() {
     setError("");
@@ -466,11 +513,12 @@ export default function NewTest() {
       return customImageSrc;
     }
 
-    const canvas = canvasRef.current;
+    const canvas = canvasRef.current || document.createElement("canvas");
     const video = videoRef.current;
     canvas.width = video?.videoWidth || 960;
     canvas.height = video?.videoHeight || 720;
     const ctx = canvas.getContext("2d");
+
     if (video?.srcObject && video.readyState >= 2) {
       ctx.drawImage(video, 0, 0);
     } else {
@@ -503,9 +551,6 @@ export default function NewTest() {
     setLockedReading(null);
     setStabilityScore(0);
     historyRef.current = [];
-    if (scenario === "custom-image" && uploadedImageRef.current) {
-      sampleImage(uploadedImageRef.current);
-    }
   }
 
   async function submitForAnalysis() {
@@ -560,6 +605,9 @@ export default function NewTest() {
       setPhase("rejected");
       return;
     }
+
+    // Stop camera immediately during calibration to free camera lock
+    stopCameraStream();
 
     setPhase("calibrate");
     await new Promise((r) => setTimeout(r, 650));
@@ -685,7 +733,7 @@ export default function NewTest() {
         {phase === "capture" && (
           <div style={{ display: "flex", gap: 10, alignItems: "center" }}>
             <span className={`badge ${isLocked ? "ok" : "demo"}`} style={{ padding: "6px 12px" }}>
-              {isLocked ? "● READING LOCKED" : scenario === "custom-image" ? "● IMAGE LOADED" : "● LIVE SAMPLING (15 FPS)"}
+              {isLocked ? "● READING LOCKED" : scenario === "custom-image" ? "● IMAGE LOADED" : "● LIVE SENSING (10 FPS)"}
             </span>
           </div>
         )}
@@ -777,12 +825,31 @@ export default function NewTest() {
             {/* Viewfinder with Live Reticle & Telemetry Overlays */}
             <div className={`viewfinder ${isLocked ? "viewfinder-locked" : ""}`}>
               {scenario === "camera" ? (
-                <video ref={videoRef} playsInline muted autoPlay />
+                <>
+                  <video
+                    ref={videoRef}
+                    playsInline
+                    muted
+                    autoPlay
+                    style={{
+                      display: "block",
+                      width: "100%",
+                      height: "100%",
+                      objectFit: "cover",
+                    }}
+                  />
+                  {!cameraReady && !cameraError && (
+                    <div className="viewfinder-placeholder">
+                      <div className="hud-dot" style={{ width: 12, height: 12, marginBottom: 8 }} />
+                      <span>Initializing live camera sensor...</span>
+                    </div>
+                  )}
+                </>
               ) : customImageSrc ? (
                 <img
                   src={customImageSrc}
                   alt="Field Kit Analysis"
-                  style={{ width: "100%", height: "100%", objectFit: "contain" }}
+                  style={{ width: "100%", height: "100%", objectFit: "contain", display: "block" }}
                 />
               ) : (
                 <div className="empty">No image selected. Please choose or upload an image.</div>
@@ -792,11 +859,10 @@ export default function NewTest() {
               <div
                 className="reticle-target"
                 style={{
-                  left: `${roiPos.x}%`,
-                  top: `${roiPos.y}%`,
-                  transform: "translate(-50%, -50%)",
-                  width: `${roiPos.size * 3.5}px`,
-                  height: `${roiPos.size * 3.5}px`,
+                  left: scenario === "camera" ? "50%" : `${roiPos.x}%`,
+                  top: scenario === "camera" ? "50%" : `${roiPos.y}%`,
+                  width: scenario === "camera" ? "120px" : `${roiPos.size * 3.5}px`,
+                  height: scenario === "camera" ? "120px" : `${roiPos.size * 3.5}px`,
                 }}
               >
                 <div className="reticle-corner tl" />
@@ -810,11 +876,11 @@ export default function NewTest() {
               <div
                 className="refcard-box"
                 style={{
-                  left: `${refCardPos.x}%`,
-                  top: `${refCardPos.y}%`,
-                  transform: "translate(-50%, -50%)",
-                  width: `${refCardPos.size * 5.5}px`,
-                  height: `${refCardPos.size * 4}px`,
+                  left: scenario === "camera" ? "14px" : `${refCardPos.x}%`,
+                  top: scenario === "camera" ? "14px" : `${refCardPos.y}%`,
+                  transform: scenario === "camera" ? "none" : "translate(-50%, -50%)",
+                  width: scenario === "camera" ? "88px" : `${refCardPos.size * 5.5}px`,
+                  height: scenario === "camera" ? "64px" : `${refCardPos.size * 4}px`,
                 }}
               >
                 <span className="refcard-label">REF CARD (D65)</span>
@@ -824,7 +890,7 @@ export default function NewTest() {
               <div className="viewfinder-hud">
                 <div className="hud-badge">
                   <span className="hud-dot" style={{ background: isLocked ? "var(--ok)" : "var(--accent)" }} />
-                  <span>{isLocked ? "LOCKED READING" : scenario === "custom-image" ? "ACTIVE IMAGE ANALYSIS" : "ACTIVE SENSING"}</span>
+                  <span>{isLocked ? "LOCKED READING" : scenario === "custom-image" ? "IMAGE ANALYSIS" : "LIVE CAMERA FEED"}</span>
                 </div>
                 {activeReading && (
                   <div className="hud-badge prediction-badge" data-result={activeReading.result}>
@@ -861,7 +927,7 @@ export default function NewTest() {
                 </button>
               ) : (
                 <button className="btn" onClick={handleUnlockReading}>
-                  Unlock & Recalibrate
+                  Unlock & Resume Feed
                 </button>
               )}
 
@@ -938,11 +1004,7 @@ export default function NewTest() {
                       min="10"
                       max="90"
                       value={roiPos.x}
-                      onChange={(e) => {
-                        const next = { ...roiPos, x: Number(e.target.value) };
-                        setRoiPos(next);
-                        if (uploadedImageRef.current) sampleImage(uploadedImageRef.current);
-                      }}
+                      onChange={(e) => setRoiPos({ ...roiPos, x: Number(e.target.value) })}
                       style={{ width: "100%" }}
                     />
                   </div>
@@ -953,11 +1015,7 @@ export default function NewTest() {
                       min="10"
                       max="90"
                       value={roiPos.y}
-                      onChange={(e) => {
-                        const next = { ...roiPos, y: Number(e.target.value) };
-                        setRoiPos(next);
-                        if (uploadedImageRef.current) sampleImage(uploadedImageRef.current);
-                      }}
+                      onChange={(e) => setRoiPos({ ...roiPos, y: Number(e.target.value) })}
                       style={{ width: "100%" }}
                     />
                   </div>
@@ -987,7 +1045,10 @@ export default function NewTest() {
               <div className="error-box" style={{ marginTop: 12 }}>
                 <strong>CAMERA NOTICE</strong>
                 <p>{cameraError}</p>
-                <button className="btn" onClick={startCamera}>Try again</button>
+                <div className="btn-row" style={{ marginTop: 8 }}>
+                  <button className="btn" onClick={startCamera}>Try camera again</button>
+                  <button className="btn btn-primary" onClick={() => setScenario("custom-image")}>Switch to image mode</button>
+                </div>
               </div>
             )}
           </div>

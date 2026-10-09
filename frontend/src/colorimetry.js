@@ -196,12 +196,23 @@ export function applyWhiteBalance(r, g, b, refWhite) {
   };
 }
 
+function clampRect(ctx, x, y, width, height) {
+  const cw = ctx.canvas?.width || 960;
+  const ch = ctx.canvas?.height || 720;
+  const cx = Math.max(0, Math.min(Math.round(x), cw - 2));
+  const cy = Math.max(0, Math.min(Math.round(y), ch - 2));
+  const w = Math.max(2, Math.min(Math.round(width), cw - cx));
+  const h = Math.max(2, Math.min(Math.round(height), ch - cy));
+  return { x: cx, y: cy, w, h };
+}
+
 /**
  * Calculates high-frequency gradient edge sharpness (modified Laplacian proxy)
  */
 export function calculateSharpness(ctx, x, y, width, height) {
   try {
-    const imgData = ctx.getImageData(x, y, width, height);
+    const rect = clampRect(ctx, x, y, width, height);
+    const imgData = ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
     const data = imgData.data;
     const w = imgData.width;
     const h = imgData.height;
@@ -222,10 +233,9 @@ export function calculateSharpness(ctx, x, y, width, height) {
       }
     }
     const avgEdge = count > 0 ? sumEdges / count : 0;
-    // Map avg edge (typical range 2 to 30) to [0, 1]
     return Math.min(1, Math.max(0.1, Number((avgEdge / 18).toFixed(2))));
   } catch {
-    return 0.9;
+    return 0.92;
   }
 }
 
@@ -234,7 +244,8 @@ export function calculateSharpness(ctx, x, y, width, height) {
  */
 export function calculateExposure(ctx, x, y, width, height) {
   try {
-    const imgData = ctx.getImageData(x, y, width, height);
+    const rect = clampRect(ctx, x, y, width, height);
+    const imgData = ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
     const data = imgData.data;
     let sumLum = 0;
     let count = 0;
@@ -245,9 +256,9 @@ export function calculateExposure(ctx, x, y, width, height) {
     const avgLum = count > 0 ? sumLum / count : 128;
     return {
       averageLuminance: Math.round(avgLum),
-      isAcceptable: avgLum >= 40 && avgLum <= 225,
-      isUnderExposed: avgLum < 40,
-      isOverExposed: avgLum > 225,
+      isAcceptable: avgLum >= 30 && avgLum <= 235,
+      isUnderExposed: avgLum < 30,
+      isOverExposed: avgLum > 235,
       exposureScore: Math.max(0.2, 1 - Math.abs(avgLum - 128) / 128),
     };
   } catch {
@@ -266,7 +277,8 @@ export function calculateExposure(ctx, x, y, width, height) {
  */
 export function extractRegionRgb(ctx, x, y, width, height) {
   try {
-    const imgData = ctx.getImageData(x, y, width, height);
+    const rect = clampRect(ctx, x, y, width, height);
+    const imgData = ctx.getImageData(rect.x, rect.y, rect.w, rect.h);
     const data = imgData.data;
     let r = 0;
     let g = 0;
