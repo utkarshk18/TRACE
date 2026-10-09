@@ -270,9 +270,31 @@ label { display: block; font-size: 12px; color: var(--muted); margin-bottom: 6px
   padding: 22px;
 }
 
-.landing { max-width: 1080px; margin: 0 auto; padding: 48px 24px 80px; }
+.landing { max-width: 1080px; margin: 0 auto; padding: 56px 24px 88px; }
+.landing-brand-wrap {
+  margin-bottom: 24px;
+}
+.landing-logo {
+  font-size: clamp(54px, 10vw, 104px);
+  font-weight: 800;
+  letter-spacing: 0.18em;
+  line-height: 0.95;
+  margin: 0 0 10px;
+  background: linear-gradient(135deg, #ffffff 30%, var(--accent) 100%);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  text-shadow: 0 0 40px rgba(201, 162, 39, 0.22);
+}
+.landing-headline {
+  font-size: clamp(26px, 4vw, 42px);
+  line-height: 1.15;
+  letter-spacing: -0.02em;
+  margin: 0 0 18px;
+  font-weight: 600;
+  color: var(--text);
+}
 .hero h1 { font-size: clamp(36px, 6vw, 64px); line-height: 1.05; letter-spacing: -0.03em; margin: 12px 0 18px; }
-.kicker { letter-spacing: 0.32em; font-size: 12px; color: var(--accent); }
+.kicker { letter-spacing: 0.28em; font-size: 13px; font-weight: 600; color: var(--accent); }
 .flow {
   display: grid;
   grid-template-columns: 1fr auto 1fr auto 1fr;

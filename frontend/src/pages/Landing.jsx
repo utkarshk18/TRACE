@@ -12,8 +12,11 @@ const stages = [
 export default function Landing() {
   return (
     <div className="landing">
-      <div className="kicker">TRACE</div>
-      <h1>Turn field test reactions into verifiable digital evidence.</h1>
+      <div className="landing-brand-wrap">
+        <h1 className="landing-logo">TRACE</h1>
+        <div className="kicker">FORENSIC COLORIMETRIC EVIDENCE PLATFORM</div>
+      </div>
+      <h2 className="landing-headline">Turn field test reactions into verifiable digital evidence.</h2>
       <p className="lede">
         AI-assisted colorimetric evaluation for faster, more consistent, tamper-evident field documentation.
         TRACE does not replace the chemical kit — it records, calibrates, and protects what the kit already shows.
