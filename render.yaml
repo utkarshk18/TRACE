@@ -1,0 +1,27 @@
+services:
+  - type: web
+    name: trace-api
+    runtime: node
+    rootDir: backend
+    buildCommand: npm install --omit=dev
+    startCommand: npm start
+    healthCheckPath: /health
+    plan: free
+    autoDeploy: true
+    envVars:
+      - key: NODE_VERSION
+        value: 20
+      - key: PORT
+        value: 8000
+      - key: DEMO_MODE
+        value: "true"
+      - key: MONGODB_DB
+        value: trace
+      - key: JWT_EXPIRES_IN
+        value: 8h
+      - key: CORS_ORIGIN
+        value: https://frontend-zeta-cyan-83.vercel.app
+      - key: DATABASE_URL
+        sync: false
+      - key: JWT_SECRET
+        sync: false
