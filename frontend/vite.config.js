@@ -3,7 +3,14 @@ import react from "@vitejs/plugin-react";
 
 export default defineConfig({
   plugins: [react()],
+  build: {
+    outDir: "dist",
+    sourcemap: false,
+  },
   server: {
+    // Dev-only proxy — not used in production builds.
+    // In production, set the VITE_API_URL environment variable
+    // in your Vercel project settings to point at your backend URL.
     port: 5173,
     proxy: {
       "/api": {

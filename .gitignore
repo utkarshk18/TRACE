@@ -3,6 +3,8 @@ dist
 .env
 backend/.env
 frontend/.env
+# Allow .env.production — no secrets, just public API URLs
+!frontend/.env.production
 *.log
 .DS_Store
 uploads

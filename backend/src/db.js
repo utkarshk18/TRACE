@@ -79,8 +79,16 @@ export async function connectDb() {
       console.log("Connected to remote MongoDB Atlas cluster.");
     } catch (error) {
       if (!canUseMemoryFallback(config.databaseUrl)) throw error;
-      console.warn(`Remote MongoDB connection failed (${error.message}) — starting in-memory fallback engine.`);
-      const { MongoMemoryServer } = await import("mongodb-memory-server");
+      console.warn(`Remote MongoDB connection failed (${error.message}) — attempting in-memory fallback engine.`);
+      let MongoMemoryServer;
+      try {
+        ({ MongoMemoryServer } = await import("mongodb-memory-server"));
+      } catch {
+        throw new Error(
+          "No MongoDB connection available and mongodb-memory-server is not installed. " +
+          "Set DATABASE_URL to a valid MongoDB URI or install mongodb-memory-server as a dev dependency."
+        );
+      }
       memoryServer = await MongoMemoryServer.create();
       client = new MongoClient(memoryServer.getUri(), timeout);
       await client.connect();
