@@ -65,17 +65,19 @@ app.use((err, _req, res, _next) => {
 });
 
 async function start() {
+  const server = app.listen(config.port, config.host, () => {
+    console.log(`TRACE API listening on http://${config.host === "0.0.0.0" ? "localhost" : config.host}:${config.port}`);
+  });
+
+  server.on("error", (err) => {
+    console.error(err);
+    process.exit(1);
+  });
+
   try {
     await connectDb();
     const seeded = await seedIfEmpty();
-    const server = app.listen(config.port, config.host, () => {
-      console.log(`TRACE API listening on http://${config.host === "0.0.0.0" ? "localhost" : config.host}:${config.port}`);
-      if (seeded.seeded) console.log("Demo data seeded.");
-    });
-    server.on("error", (err) => {
-      console.error(err);
-      process.exit(1);
-    });
+    if (seeded.seeded) console.log("Demo data seeded.");
   } catch (error) {
     const message =
       error?.code === 8000 ||
@@ -85,10 +87,9 @@ async function start() {
           ? error.message
           : String(error);
     console.error(
-      "Failed to initialize TRACE API:",
+      "Failed to initialize TRACE API Database:",
       message
     );
-    process.exitCode = 1;
   }
 }
 

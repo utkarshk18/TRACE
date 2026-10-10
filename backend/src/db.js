@@ -70,7 +70,7 @@ export async function connectDb() {
     console.log("Connected to local MongoDB instance on port 27017 (optimal speed).");
   } catch {
     // 2. Fall back to configured DATABASE_URL (Atlas / remote)
-    const timeout = { serverSelectionTimeoutMS: 2000, connectTimeoutMS: 2500 };
+    const timeout = { serverSelectionTimeoutMS: 10000, connectTimeoutMS: 10000 };
     try {
       await resolveAtlasSrv(config.databaseUrl);
       client = new MongoClient(config.databaseUrl, timeout);
