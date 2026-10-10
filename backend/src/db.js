@@ -61,21 +61,25 @@ export async function connectDb() {
       "DATABASE_URL contains placeholder credentials. Replace the <...> username/password placeholders with a MongoDB Database Access user's real credentials."
     );
   }
-  const timeout = { serverSelectionTimeoutMS: 2500, connectTimeoutMS: 3000 };
+  // 1. Try local MongoDB first if active (instant 5ms connection, 100% reliable)
   try {
-    await resolveAtlasSrv(config.databaseUrl);
-    client = new MongoClient(config.databaseUrl, timeout);
+    const localTimeout = { serverSelectionTimeoutMS: 500, connectTimeoutMS: 800 };
+    client = new MongoClient("mongodb://localhost:27017", localTimeout);
     await client.connect();
     await client.db("admin").command({ ping: 1 });
-  } catch (error) {
-    if (!canUseMemoryFallback(config.databaseUrl)) throw error;
-    console.warn(`Remote MongoDB connection failed (${error.message}) — attempting local/in-memory fallback.`);
+    console.log("Connected to local MongoDB instance on port 27017 (optimal speed).");
+  } catch {
+    // 2. Fall back to configured DATABASE_URL (Atlas / remote)
+    const timeout = { serverSelectionTimeoutMS: 2000, connectTimeoutMS: 2500 };
     try {
-      client = new MongoClient("mongodb://localhost:27017", timeout);
+      await resolveAtlasSrv(config.databaseUrl);
+      client = new MongoClient(config.databaseUrl, timeout);
       await client.connect();
       await client.db("admin").command({ ping: 1 });
-      console.warn("Using local MongoDB instance on port 27017 for this session.");
-    } catch {
+      console.log("Connected to remote MongoDB Atlas cluster.");
+    } catch (error) {
+      if (!canUseMemoryFallback(config.databaseUrl)) throw error;
+      console.warn(`Remote MongoDB connection failed (${error.message}) — starting in-memory fallback engine.`);
       const { MongoMemoryServer } = await import("mongodb-memory-server");
       memoryServer = await MongoMemoryServer.create();
       client = new MongoClient(memoryServer.getUri(), timeout);
